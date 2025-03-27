@@ -194,4 +194,4 @@ Ensure the response is a valid JSON object that can be parsed.
             "Please provide a detailed answer with elaboration on the report and reference material."
         )
         
-        return json.loads(response.text)
+        return json.loads(response.text) 

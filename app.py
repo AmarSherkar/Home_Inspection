@@ -160,3 +160,4 @@ if st.session_state.get("report_ready", False):
         file_name="home_inspection_report.json",
         mime="application/json"
     )
+ 
