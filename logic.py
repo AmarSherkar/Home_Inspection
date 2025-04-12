@@ -9,6 +9,14 @@ from google.generativeai import caching
 import cv2
 from typing import Dict, List
 import tempfile
+from docx import Document
+from docx.shared import Pt, RGBColor, Inches
+from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
+from docx.enum.table import WD_TABLE_ALIGNMENT
+from docx.oxml.ns import qn
+from docx.oxml import OxmlElement
+from PIL import Image
+import io
 
 class HomeInspector:
     def __init__(self, api_key: str, standards_dir: str, examples_dir: str):
@@ -133,7 +141,7 @@ class HomeInspector:
 
     def generate_report(self) -> Dict:
         """Generate inspection report based on uploaded media"""
-        prompt =  """
+        prompt = """
 You have been supplied with a set of building standards and manufacturer specifications to evaluate the photos and videos against.
 Please be specific about any violations of building codes or manufacturer specifications found in the documentation.
 
@@ -194,4 +202,159 @@ Ensure the response is a valid JSON object that can be parsed.
             "Please provide a detailed answer with elaboration on the report and reference material."
         )
         
-        return json.loads(response.text) 
+        return json.loads(response.text)
+
+    def generate_word_report(self, report_data: Dict, output_path: str = "inspection_report.docx"):
+        """Generate a professional Word document report with images and formatting"""
+        doc = Document()
+        
+        # Add report header
+        self._add_report_header(doc)
+        
+        # Add executive summary
+        self._add_executive_summary(doc, report_data)
+        
+        # Add detailed findings with images
+        self._add_detailed_findings(doc, report_data)
+        
+        # Add maintenance schedule
+        self._add_maintenance_schedule(doc, report_data)
+        
+        # Add footer with page numbers
+        self._add_footer(doc)
+        
+        # Save the document
+        doc.save(output_path)
+        return output_path
+
+    def _add_report_header(self, doc):
+        """Add report title header"""
+        # Add title
+        title = doc.add_heading('HOME INSPECTION REPORT', level=1)
+        title.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
+        
+        # Add date and prepared by
+        date_para = doc.add_paragraph()
+        date_para.add_run(f"Date: {datetime.datetime.now().strftime('%B %d, %Y')}")
+        date_para.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
+        
+        prepared_para = doc.add_paragraph()
+        prepared_para.add_run("Prepared by: AI Home Inspection System")
+        prepared_para.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
+        
+        doc.add_paragraph()  # Add spacing
+
+    def _add_executive_summary(self, doc, report_data):
+        """Add executive summary section"""
+        doc.add_heading('Executive Summary', level=1)
+        
+        # Overall condition
+        p = doc.add_paragraph()
+        p.add_run("Overall Condition: ").bold = True
+        p.add_run(report_data['executiveSummary']['overallCondition'])
+        
+        # Critical issues
+        doc.add_heading('Critical Issues', level=2)
+        for issue in report_data['executiveSummary']['criticalIssues']:
+            p = doc.add_paragraph(style='List Bullet')
+            p.add_run(issue).bold = True
+            p.add_run().font.color.rgb = RGBColor(255, 0, 0)  # Red color for critical issues
+        
+        # Recommended actions
+        doc.add_heading('Recommended Actions', level=2)
+        for action in report_data['executiveSummary']['recommendedActions']:
+            doc.add_paragraph(action, style='List Bullet')
+        
+        doc.add_page_break()
+
+    def _add_detailed_findings(self, doc, report_data):
+        """Add detailed findings with images"""
+        doc.add_heading('Detailed Inspection Findings', level=1)
+        
+        for finding in report_data['detailedInspection']:
+            # Add finding header
+            doc.add_heading(f"{finding['area']} - {finding['condition']}", level=2)
+            
+            # Try to add image if available
+            if finding.get('mediaReference'):
+                media_ref = finding['mediaReference']
+                if media_ref.startswith('frame_'):
+                    frame_path = os.path.join("extracted_frames", media_ref)
+                    if os.path.exists(frame_path):
+                        try:
+                            # Add image with caption
+                            doc.add_picture(frame_path, width=Inches(4.0))
+                            caption = doc.add_paragraph(f"Figure: {finding['area']} at {finding.get('timestamp', 'unknown time')}")
+                            caption.style = 'Caption'
+                            doc.add_paragraph()  # Add spacing after image
+                        except Exception as e:
+                            print(f"Error adding image to Word doc: {e}")
+            
+            # Add compliance status with color
+            p = doc.add_paragraph()
+            p.add_run("Compliance Status: ").bold = True
+            status_run = p.add_run(finding['complianceStatus'])
+            if finding['complianceStatus'] == 'Non-compliant':
+                status_run.font.color.rgb = RGBColor(255, 0, 0)  # Red
+            else:
+                status_run.font.color.rgb = RGBColor(0, 128, 0)  # Green
+            
+            # Add issues found
+            if finding.get('issuesFound'):
+                doc.add_heading('Issues Found', level=3)
+                for issue in finding['issuesFound']:
+                    doc.add_paragraph(issue, style='List Bullet')
+            
+            # Add reference
+            if finding.get('referenceDoc') and finding.get('referenceSection'):
+                p = doc.add_paragraph()
+                p.add_run("Standard Reference: ").bold = True
+                p.add_run(f"{finding['referenceDoc']} - {finding['referenceSection']}")
+            
+            # Add recommendation
+            if finding.get('recommendation'):
+                p = doc.add_paragraph()
+                p.add_run("Recommendation: ").bold = True
+                p.add_run(finding['recommendation'])
+            
+            doc.add_paragraph()  # Add space between findings
+
+    def _add_maintenance_schedule(self, doc, report_data):
+        """Add maintenance schedule section"""
+        doc.add_heading('Maintenance Schedule', level=1)
+        
+        # Maintenance tasks
+        for schedule in report_data['maintenanceNotes']['maintenanceSchedule']:
+            doc.add_heading(f"{schedule['frequency']} Tasks", level=2)
+            for task in schedule['tasks']:
+                doc.add_paragraph(task, style='List Bullet')
+        
+        # Cost considerations
+        if report_data['maintenanceNotes'].get('costConsiderations'):
+            doc.add_heading('Cost Considerations', level=2)
+            for cost in report_data['maintenanceNotes']['costConsiderations']:
+                doc.add_paragraph(cost, style='List Bullet')
+
+    def _add_footer(self, doc):
+        """Add footer with page numbers to all sections"""
+        section = doc.sections[0]
+        footer = section.footer
+        
+        # Add page number
+        paragraph = footer.paragraphs[0]
+        paragraph.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
+        
+        # Add page number field
+        run = paragraph.add_run()
+        fldChar = OxmlElement('w:fldChar')
+        fldChar.set(qn('w:fldCharType'), 'begin')
+        run._r.append(fldChar)
+        
+        instrText = OxmlElement('w:instrText')
+        instrText.set(qn('xml:space'), 'preserve')
+        instrText.text = 'PAGE'
+        run._r.append(instrText)
+        
+        fldChar = OxmlElement('w:fldChar')
+        fldChar.set(qn('w:fldCharType'), 'end')
+        run._r.append(fldChar)
