@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 import tempfile
 import json
+from io import BytesIO
+import base64
 
 # Page config
 st.set_page_config(
@@ -11,6 +13,23 @@ st.set_page_config(
     page_icon="🏠",
     layout="wide"
 )
+
+def create_word_download_link(report_data):
+    """Generate a download link for the Word report"""
+    # Create a temporary file
+    temp_dir = tempfile.mkdtemp()
+    output_path = os.path.join(temp_dir, "inspection_report.docx")
+    
+    # Generate the Word report
+    inspector = st.session_state.inspector
+    inspector.generate_word_report(report_data, output_path)
+    
+    # Read the file and create download link
+    with open(output_path, "rb") as f:
+        bytes_data = f.read()
+    
+    # Create download button
+    return bytes_data
 
 # Sidebar for API key input
 with st.sidebar:
@@ -26,7 +45,8 @@ with st.sidebar:
             try:
                 inspector = HomeInspector(api_key, standards_dir, examples_dir)
                 st.session_state.inspector = inspector
-                st.session_state.video_processed = False  # Ensure video processing only happens once
+                st.session_state.video_processed = False
+                st.session_state.report_ready = False
                 st.success("Inspector initialized successfully!")
             except Exception as e:
                 st.error(f"Error initializing inspector: {str(e)}")
@@ -61,8 +81,9 @@ if uploaded_file is not None and not st.session_state.get("video_processed", Fal
             frame_paths = inspector.process_video(video_path)
             inspector.upload_user_media([video_path] + list(frame_paths.values()))
             
-            st.session_state.video_processed = True  # Mark as processed
-            st.session_state.frame_paths = frame_paths  # Store extracted frames
+            st.session_state.video_processed = True
+            st.session_state.frame_paths = frame_paths
+            st.session_state.video_path = video_path
             
             st.success("Video processed successfully!")
             st.write(f"Extracted {len(frame_paths)} frames from video")
@@ -77,18 +98,18 @@ if uploaded_file is not None and not st.session_state.get("video_processed", Fal
             st.error(f"Error processing video: {str(e)}")
 
 # Generate Report
-if st.session_state.get("video_processed", False):
+if st.session_state.get("video_processed", False) and not st.session_state.get("report_ready", False):
     if st.button("Generate Inspection Report"):
         with st.spinner("Generating report (this may take a few minutes)..."):
             try:
                 report = inspector.generate_report()
-                st.session_state.report = report  # Store the report
+                st.session_state.report = report
                 
                 # Save report to JSON file
                 with open("inspection_report.json", "w") as f:
                     json.dump(report, f, indent=4)
                     
-                st.session_state.report_ready = True  # Indicate report is ready
+                st.session_state.report_ready = True
                 st.success("Report generated successfully!")
             except Exception as e:
                 st.error(f"Error generating report: {str(e)}")
@@ -140,7 +161,7 @@ if st.session_state.get("report_ready", False):
                 
                 if finding.get('recommendation'):
                     st.markdown(f"**Recommendation:** {finding['recommendation']}")
-
+    
     # Maintenance Notes
     with st.expander("Maintenance Schedule", expanded=False):
         for schedule in report['maintenanceNotes']['maintenanceSchedule']:
@@ -153,11 +174,31 @@ if st.session_state.get("report_ready", False):
             for cost in report['maintenanceNotes']['costConsiderations']:
                 st.markdown(f"- {cost}")
     
-    # Download button
-    st.download_button(
-        label="Download Full Report",
-        data=json.dumps(report, indent=4),
-        file_name="home_inspection_report.json",
-        mime="application/json"
-    )
- 
+    # Download buttons
+    st.subheader("Download Reports")
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.download_button(
+            label="Download JSON Report",
+            data=json.dumps(report, indent=4),
+            file_name="home_inspection_report.json",
+            mime="application/json"
+        )
+    
+    with col2:
+        word_bytes = create_word_download_link(report)
+        st.download_button(
+            label="Download Word Report",
+            data=word_bytes,
+            file_name="home_inspection_report.docx",
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        )
+
+    # Reset button
+    if st.button("Start New Inspection"):
+        st.session_state.video_processed = False
+        st.session_state.report_ready = False
+        st.session_state.report = None
+        st.session_state.frame_paths = None
+        st.rerun()  # This is the corrected line
